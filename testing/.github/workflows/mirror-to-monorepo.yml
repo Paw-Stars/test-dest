@@ -49,10 +49,26 @@ jobs:
       # 7. Protective secret scan
       - name: Scan public staging directory for secrets
         run: |
+          # 7a. Run detect and write findings to a temporary report file
+          # We append '|| true' temporarily so the script doesn't crash before printing
           gitleaks detect \
             --source="$GITHUB_WORKSPACE/public-monorepo/testing" \
             --no-git \
-            -- verbose
+            --verbose \
+            --report-path="gitleaks-report.json" || EXIT_CODE=$?
+
+          # 7b. If a leak was found, format and print the report to the logs
+          if [ -s "gitleaks-report.json" ] && ! grep -q '^\[\]$' gitleaks-report.json; then
+            echo "❌ SECRETS DETECTED IN THE STAGING DIRECTORY:"
+            cat gitleaks-report.json
+
+            # 7c. Explicitly fail the workflow step to block the git push
+            exit 1
+          fi
+
+          # If the file is empty or just '[]', no leaks were found
+          echo "✅ No secrets detected. Proceeding to deployment."
+
 
       # 8. Commit and push directly from the destination repo
       - name: Push to Public Monorepo

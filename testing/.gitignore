@@ -1,1 +1,4 @@
 .env.prod
+
+# Test secrets-containing files
+test_secrets/*
