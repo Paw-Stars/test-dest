@@ -1,0 +1,88 @@
+name: Mirror Release to Public Monorepo
+on:
+  release:
+    types: [published]
+
+jobs:
+  sync:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout private repository
+        uses: actions/checkout@v7
+        with:
+          path: private-source
+          fetch-depth: 1
+
+      - name: Push subdirectory to public monorepo
+        env:
+          ORG_PAT: ${{ secrets.ORG_MONOREPO_SYNC_PAT }}
+        run: |
+          DEST_DIR="testing"
+
+          # 1. Clone the public monorepo into an isolated path
+          git clone "https://${ORG_PAT}@github.com/Paw-Stars/test-dest" public-monorepo
+
+          # 2. Configure temporary local git identity
+          cd "$GITHUB_WORKSPACE/public-monorepo"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          cd "$GITHUB_WORKSPACE"
+
+          # 3. Explicitly reference our structural paths
+          PRIVATE_ROOT="$GITHUB_WORKSPACE/private-source"
+          TARGET_DIR="$GITHUB_WORKSPACE/public-monorepo/$DEST_DIR"
+
+          # 4. Refresh destination target folder
+          rm -rf "$TARGET_DIR"
+          mkdir -p "$TARGET_DIR"
+
+          # 5. Safe Rsync (Explicitly pointing to the private source ignore file)
+          rsync -av \
+            --exclude-from="$PRIVATE_ROOT/.rsyncignore" \
+            --exclude=".git/" \
+            "$PRIVATE_ROOT/" "$TARGET_DIR/"
+
+          # 6. FAIL-SAFE: Double-wipe any stray secret patterns at the target path
+          rm -f "$TARGET_DIR"/.env*
+          rm -rf "$TARGET_DIR"/__pycache__
+
+      # 7. Protective secret scan
+      - name: Scan public staging directory for secrets
+        run: |
+          gitleaks detect \
+            --source="$GITHUB_WORKSPACE/public-monorepo/testing" \
+            --no-git \
+            -- verbose
+
+      # 8. Commit and push directly from the destination repo
+      - name: Push to Public Monorepo
+        env:
+          ORG_PAT: ${{ secrets.ORG_MONOREPO_SYNC_PAT }}
+        run: |
+          DEST_DIR="testing"
+
+          cd "$GITHUB_WORKSPACE/public-monorepo"
+
+          # Verify local identity inside the repo folder
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Stage the specific changes
+          git add "$DEST_DIR"
+
+          # Only commit and push if changes actually exist
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: automated sync of ${{ github.event.repository.name }} from release ${{ github.event.release.tag_name }}"
+            git pull --rebase origin main
+            git push origin main
+          else
+            echo "No changes detected. Skipping push."
+          fi
+
+      # 9. Cleanup
+      - name: Post-Job Self-Hosted Cleanup
+        if: always()
+        run: |
+          # Crucial step for self-hosted runners to prevent cross-run contamination
+          rm -rf "$GITHUB_WORKSPACE/private-source"
+          rm -rf "$GITHUB_WORKSPACE/public-monorepo"
